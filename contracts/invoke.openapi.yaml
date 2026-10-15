@@ -1,0 +1,274 @@
+openapi: 3.1.0
+info:
+  title: Keel 智能体调用协议
+  version: keel/v1
+  description: |
+    每个智能体必须实现这六个端点。Python SDK 和 Java starter 自动挂载，
+    Dify 应用由 keel-gateway 的协议适配转换成这套协议，对外表现一致。
+
+    一个进程里有多个智能体时，路径前缀为 /{agent}/v1/...。
+    经网关访问时外部路径为 /agents/{name}/v1/invoke。
+
+servers:
+  - url: http://{agent}.agents.svc:8000
+    variables:
+      agent: { default: hello-agent }
+
+# 所有端点都要带 auth-gateway 签发的 JWT。
+# 经网关进来的请求，aud 已由网关换票成目标智能体；SDK / starter 再做一次轻量验签（双保险）。
+# 用户 token 的 aud 统一是 keel-api，不要在智能体侧检查 aud 是否等于自己。
+security:
+  - bearerAuth: []
+
+paths:
+  /v1/invoke:
+    post:
+      summary: 调用智能体（SSE）
+      operationId: invoke
+      parameters:
+        - $ref: '#/components/parameters/Traceparent'
+        - $ref: '#/components/parameters/KeelAgent'
+        - $ref: '#/components/parameters/KeelEnv'
+        - $ref: '#/components/parameters/KeelBudget'
+        - $ref: '#/components/parameters/KeelEvalRun'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InvokeRequest' }
+      responses:
+        '200':
+          description: |
+            SSE 事件流，事件体见 sse-events.schema.json：
+            step / tool / token / final / error / suspend。
+            出错发 event: error，不直接断连。
+            发 suspend 后流正常关闭，不是挂着等。
+          content:
+            text/event-stream:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Error' }
+        '403': { $ref: '#/components/responses/Error' }
+        '429': { $ref: '#/components/responses/Error' }
+
+  /v1/runs/{run_id}/resume:
+    post:
+      summary: 人工处理完成后恢复执行
+      operationId: resumeRun
+      description: |
+        返回一条新的 SSE 流，事件集与 /v1/invoke 相同。
+        恢复时原换票 token 必然已过期（600 秒），SDK 必须重新换票；
+        用户会话也失效的改用委托 token，两者都没有则返回 RUN_RESUME_DENIED。
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+        - $ref: '#/components/parameters/Traceparent'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResumeRequest' }
+      responses:
+        '200':
+          description: SSE 事件流，同 /v1/invoke
+          content:
+            text/event-stream:
+              schema: { type: string }
+        '401': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+        '410': { $ref: '#/components/responses/Error' }
+
+  /v1/runs/{run_id}:
+    get:
+      summary: 查一次执行的状态
+      operationId: getRun
+      description: 只返回外部生命周期，不返回现场内容。checkpoint_ref 只是引用，任何角色都看不到里面是什么。
+      parameters:
+        - $ref: '#/components/parameters/RunId'
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Run' }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /v1/health:
+    get:
+      summary: 就绪探针
+      operationId: health
+      description: K8s 就绪探针、注册自检、发布流程使用
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { enum: [ok, degraded] }
+                  agent: { type: string }
+        '401': { $ref: '#/components/responses/Error' }
+        '503': { $ref: '#/components/responses/Error' }
+
+  /v1/manifest:
+    get:
+      summary: 当前生效的 manifest
+      operationId: manifest
+      description: 返回当前生效的 agent.yaml、版本和 SDK 版本。注册中心对账时核对，版本不一致会产出 VERSION_MISMATCH。
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  manifest:
+                    description: 内容须通过 manifest.schema.json
+                    type: object
+                  version: { type: string }
+                  sdkVersion: { type: string }
+        '401': { $ref: '#/components/responses/Error' }
+
+  /v1/feedback:
+    post:
+      summary: 点赞点踩
+      operationId: feedback
+      description: 写成 Langfuse 分数
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [trace_id, value]
+              properties:
+                trace_id: { type: string }
+                value: { type: integer, enum: [-1, 1] }
+                comment: { type: string }
+      responses:
+        '204': { description: 已记录 }
+        '404': { $ref: '#/components/responses/Error' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: auth-gateway 签发。验签用 GET /.well-known/jwks.json，响应缓存 1 小时
+
+  parameters:
+    Traceparent:
+      name: traceparent
+      in: header
+      required: false
+      description: W3C 格式 00-<trace_id>-<span_id>-01。跨服务靠它串成同一个 trace
+      schema: { type: string }
+    KeelAgent:
+      name: X-Keel-Agent
+      in: header
+      required: false
+      schema: { type: string }
+    KeelEnv:
+      name: X-Keel-Env
+      in: header
+      required: false
+      schema: { enum: [dev, test, staging, prod] }
+    KeelBudget:
+      name: X-Keel-Budget
+      in: header
+      required: false
+      description: 委派时由上游传入剩余预算，如 {"cny":0.5,"steps":6}
+      schema: { type: string }
+    KeelEvalRun:
+      name: X-Keel-Eval-Run
+      in: header
+      required: false
+      description: 评测流量标记，不为空时不计入线上指标
+      schema: { type: string }
+    RunId:
+      name: run_id
+      in: path
+      required: true
+      schema: { type: string }
+
+  responses:
+    Error:
+      description: 统一错误体。code 必须登记在 error-codes.yaml
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    InvokeRequest:
+      type: object
+      required: [input]
+      properties:
+        session_id:
+          type: string
+          description: 多轮对话归到同一个会话
+        idempotency_key:
+          type: string
+          description: 可选。同一智能体下重复提交返回原 run，不重新执行。工具自身是否幂等由工具负责，底座不做去重
+        input:
+          type: object
+          required: [text]
+          properties:
+            text: { type: string }
+        context:
+          type: object
+          properties:
+            user_id: { type: string }
+            org_id: { type: string }
+            channel: { type: string }
+        options:
+          type: object
+          properties:
+            stream: { type: boolean, default: true }
+            eval_run_id: { type: [string, 'null'] }
+
+    ResumeRequest:
+      type: object
+      required: [resume_token]
+      properties:
+        resume_token:
+          type: string
+          description: suspend 事件里原样带回。只证明持有者看到过这次挂起，不是认证凭据
+        decision:
+          enum: [approve, reject]
+          description: reason=approval 时必填
+        input:
+          type: object
+          description: reason=input_required 时必填
+          properties:
+            text: { type: string }
+        patch:
+          type: object
+          description: 可选。审批人修改后的工具参数
+        consent_id:
+          type: string
+          description: 可选。挂起超过 10 分钟时由 keel-server 带上，SDK 据此换委托 token
+
+    Run:
+      type: object
+      required: [run_id, agent, status]
+      properties:
+        run_id: { type: string }
+        agent: { type: string }
+        status: { enum: [RUNNING, SUSPENDED, DONE, FAILED, EXPIRED] }
+        suspend_reason: { enum: [approval, input_required, handoff] }
+        deadline: { type: string, format: date-time }
+        trace_id: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    Error:
+      type: object
+      required: [code, message, retryable]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        trace_id: { type: string }
+        run_id: { type: string }
+        retryable: { type: boolean }

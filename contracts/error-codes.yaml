@@ -1,0 +1,306 @@
+# Keel 全平台错误码 · keel/v1
+#
+# 格式 {模块}_{原因}。代码里不允许写字面量错误码，一律从生成的枚举读。
+# 错误体统一 {code, message, trace_id, retryable}。retryable 由本文件给出，
+# SDK 和网关直接读，不要各自判断。
+# SSE 中出错发 event: error，不直接断连。
+#
+# 新增错误码是非破坏性的（加字段/加条目）；改已有条目的 retryable 是破坏性的，要升 v2。
+
+version: keel/v1
+
+codes:
+  # ── keel-server 通用 ────────────────────────────────────────────
+  SERVER_INVALID_PARAM:
+    message: 请求参数不合法
+    retryable: false
+    http: 400
+
+  SERVER_NOT_FOUND:
+    message: 资源不存在
+    retryable: false
+    http: 404
+
+  SERVER_INTERNAL_ERROR:
+    message: 服务内部错误
+    retryable: true
+    http: 500
+
+  AGENT_MANIFEST_INVALID:
+    message: manifest 未通过校验
+    retryable: false
+    http: 400
+
+  AGENT_SELF_CHECK_FAILED:
+    message: 注册自检未通过
+    retryable: false
+    http: 409
+
+  AGENT_NAME_TAKEN:
+    message: 名称已被占用
+    retryable: false
+    http: 409
+
+  AGENT_NOT_RETIRED:
+    message: 智能体还没下线，不能删除
+    retryable: false
+    http: 409
+
+  AGENT_MAX_STEPS_EXCEEDED:
+    message: 智能体执行步数已达到上限
+    retryable: false
+    http: 409
+
+  # ── keel-gateway ────────────────────────────────────────────────
+  GW_QUOTA_EXCEEDED:
+    message: 配额已用完
+    retryable: true
+    http: 429
+    note: 三维令牌桶（用户 / 组织 / 智能体）任一维度超限
+
+  GW_CONCURRENCY_LIMIT:
+    message: 并发连接数达到上限
+    retryable: true
+    http: 429
+    note: 挂起中的 run 不占并发位，网关转发 suspend 事件时释放
+
+  GW_AGENT_OFFLINE:
+    message: 智能体当前不可用
+    retryable: true
+    http: 503
+    note: 无就绪实例或心跳超 45 秒
+
+  # ── 工具 ────────────────────────────────────────────────────────
+  TOOL_NOT_GRANTED:
+    message: 智能体没有该工具的使用授权
+    retryable: false
+    http: 403
+    note: manifest 里未声明，或共享工具未授权
+
+  TOOL_RETIRED:
+    message: 工具已下线
+    retryable: false
+    http: 410
+    note: 废弃期内照常可调用，只在 span 打 keel.tool.deprecated=true
+
+  TOOL_TIMEOUT:
+    message: 工具调用超时
+    retryable: true
+    http: 504
+
+  TOOL_HAS_PROD_DEPENDENTS:
+    message: 工具仍有 prod 依赖方，不能直接下线
+    retryable: false
+    http: 409
+    note: 只能先废弃（给替代工具和截止日期），依赖方迁走后再下线
+
+  # ── 审批 ────────────────────────────────────────────────────────
+  APPROVAL_REJECTED:
+    message: 审批被驳回
+    retryable: false
+    http: 403
+
+  APPROVAL_EXPIRED:
+    message: 审批超时未处理
+    retryable: false
+    http: 408
+    note: 超过 approval_policy.timeout_minutes，run 一并置 EXPIRED
+
+  # ── 运行生命周期 ────────────────────────────────────────────────
+  RUN_NOT_FOUND:
+    message: 找不到该次执行
+    retryable: false
+    http: 404
+
+  RUN_NOT_RESUMABLE:
+    message: 该次执行不处于可恢复状态
+    retryable: false
+    http: 409
+    note: 只有 SUSPENDED 能恢复；RUNNING / DONE / FAILED 都拒绝
+
+  RUN_EXPIRED:
+    message: 该次执行已超过截止时间
+    retryable: false
+    http: 410
+
+  RUN_RESUME_DENIED:
+    message: 无法恢复执行，凭据已失效
+    retryable: false
+    http: 401
+    note: 换票 token 过期（600 秒）、用户会话失效且无委托 token。提示用户重新发起，不要静默降级
+
+  # ── 审计 ────────────────────────────────────────────────────────
+  AUDIT_WRITE_FAILED:
+    message: 审计写入失败，操作已拒绝
+    retryable: true
+    http: 503
+    note: 高风险动作同步写失败时业务必须失败，不允许 catch 后继续
+
+  # ── 护栏 ────────────────────────────────────────────────────────
+  GUARD_INJECTION_BLOCKED:
+    message: 输入被提示词注入检测拦截
+    retryable: false
+    http: 400
+    note: 仅 enforce 模式拦截；shadow 模式只标注不拦
+
+  # ── 薄网关 ──────────────────────────────────────────────────────
+  LLM_BUDGET_EXCEEDED:
+    message: 模型日预算已用完
+    retryable: true
+    http: 429
+
+  LLM_KEY_BLOCKED:
+    message: 虚拟 Key 已停用
+    retryable: false
+    http: 401
+
+  LLM_RATE_LIMITED:
+    message: 虚拟 Key 的请求速率或并发已达上限
+    retryable: true
+    http: 429
+
+  # ── 渠道 ────────────────────────────────────────────────────────
+  CHANNEL_ORIGIN_DENIED:
+    message: 这个域名没有登记到该智能体的渠道
+    retryable: false
+    http: 403
+
+  # ── 记忆 ────────────────────────────────────────────────────────
+  MEMORY_WRITE_DENIED:
+    message: 当前智能体不允许写入这类记忆
+    retryable: false
+    http: 403
+
+  # ── 技能 ────────────────────────────────────────────────────────
+  SKILL_NOT_GRANTED:
+    message: 技能未授权或版本与 manifest 不一致
+    retryable: false
+    http: 403
+
+  # ── 委派 ────────────────────────────────────────────────────────
+  DELEGATE_NOT_DECLARED:
+    message: 目标智能体未在 manifest 的 delegates 中声明
+    retryable: false
+    http: 403
+
+  # ── 提示词 ──────────────────────────────────────────────────────
+  PROMPT_NOT_DECLARED:
+    message: 提示词未在 manifest 中声明
+    retryable: false
+    http: 404
+
+  PROMPT_UNAVAILABLE:
+    message: 当前环境的提示词不可用
+    retryable: true
+    http: 503
+
+  PROMPT_VARIABLE_MISSING:
+    message: 提示词变量缺失
+    retryable: false
+    http: 400
+
+  PROMPT_TYPE_MISMATCH:
+    message: 提示词类型与声明不一致
+    retryable: false
+    http: 400
+
+  PROMPT_NOT_GATED:
+    message: 提示词尚未通过 staging 回归，不能发布
+    retryable: false
+    http: 409
+
+  PROMPT_ROLLBACK_TARGET:
+    message: 只能回滚到发布过的提示词版本
+    retryable: false
+    http: 409
+
+  AUTH_UNAUTHENTICATED:
+    message: 请先登录后再继续
+    retryable: false
+    http: 401
+
+  AUTH_TOKEN_EXPIRED:
+    message: 登录已过期，请重新登录
+    retryable: true
+    http: 401
+
+  AUTH_TOKEN_AUDIENCE:
+    message: 这个登录态不能用于 Keel 控制台
+    retryable: false
+    http: 401
+
+  AUTH_CONSOLE_FORBIDDEN:
+    message: 这个账号还没有开通控制台，请联系平台管理员
+    retryable: false
+    http: 403
+
+  AUTH_PREVIEW_READONLY:
+    message: 预览模式只能查看，登录后才能操作
+    retryable: false
+    http: 403
+
+  AUTH_BAD_CREDENTIALS:
+    message: 账号或密码不正确。没有账号或忘记密码，请联系平台管理员
+    retryable: false
+    http: 401
+
+  AUTH_CAPTCHA_REQUIRED:
+    message: 为了保护账号，请填写图形验证码后再登录
+    retryable: false
+    http: 423
+
+  AUTH_LOCKED:
+    message: 登录失败次数过多，请 15 分钟后再试
+    retryable: false
+    http: 423
+
+  AUTH_SMS_RATE_LIMITED:
+    message: 操作太频繁，请稍后再试
+    retryable: true
+    http: 429
+
+  AUTH_GATEWAY_UNAVAILABLE:
+    message: 登录服务暂时不可用，请稍后再试
+    retryable: true
+    http: 503
+
+  INSIGHT_UPSTREAM_UNAVAILABLE:
+    message: 链路暂时拉不到，请稍后再试
+    retryable: true
+    http: 503
+
+  GIT_UPSTREAM_FAILED:
+    message: GitHub 调用失败
+    retryable: true
+    http: 502
+
+  # ── 研发任务 ────────────────────────────────────────────────────
+  DEVFLOW_BUDGET_EXCEEDED:
+    message: 研发任务花费已达到预算上限
+    retryable: false
+    http: 409
+
+  DEVFLOW_FIX_ROUNDS_EXHAUSTED:
+    message: 修复轮次已用完
+    retryable: false
+    http: 409
+
+  DEVFLOW_HOLDOUT_FAILED:
+    message: 隐藏考题未通过门禁
+    retryable: false
+    http: 409
+
+  DEVFLOW_SANDBOX_TIMEOUT:
+    message: 沙箱执行超过 10 分钟
+    retryable: true
+    http: 504
+
+  DEVFLOW_GRANT_MISSING:
+    message: 缺少共享工具授权
+    retryable: false
+    http: 403
+
+  DEVFLOW_LINEAGE_FORBIDDEN:
+    message: 不能向上生产，也不能修改自己
+    retryable: false
+    http: 403

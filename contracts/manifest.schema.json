@@ -1,0 +1,314 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://keel.io/contracts/v1/manifest.schema.json",
+  "title": "Keel Agent Manifest (agent.yaml / service.yaml)",
+  "description": "keel/v1 契约。除 metadata.name 和 spec.runtime.endpoint 外所有字段都有默认值。未列出的字段一律被接受并忽略（平台要同时兼容两个小版本），但枚举值必须是已知取值。",
+  "type": "object",
+  "required": ["apiVersion", "metadata", "spec"],
+  "properties": {
+    "apiVersion": { "const": "keel/v1" },
+    "kind": {
+      "enum": ["Agent", "Service"],
+      "default": "Agent",
+      "description": "Agent 是业务智能体；Service 是 rag-forge 这类共享服务，不走评测门禁"
+    },
+    "metadata": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{1,38}[a-z0-9]$",
+          "description": "全局唯一。同时用作 auth-gateway 的 client_id、K8s Secret 名 keel-{name}、薄网关虚拟 Key 别名的前缀"
+        },
+        "displayName": { "type": "string" },
+        "owner": { "type": "string", "description": "组织 / 负责人，如 电力运维组 / zhang.gong" }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "required": ["runtime"],
+      "properties": {
+        "kind": {
+          "enum": ["agent", "workflow"],
+          "description": "执行形态；缺省兼容已有 manifest，显式 agent 在注册时接受智能体要素检查"
+        },
+        "capabilities": {
+          "type": "object",
+          "description": "显式 agent 的能力声明；真实行为仍需运行测试和门禁证明",
+          "properties": {
+            "toolCalling": { "type": "boolean" },
+            "loop": { "type": "boolean" },
+            "memory": { "type": "boolean" }
+          }
+        },
+        "runtime": {
+          "type": "object",
+          "required": ["endpoint"],
+          "properties": {
+            "type": { "enum": ["code", "dify"], "default": "code" },
+            "language": { "enum": ["python", "java", "other"], "default": "python" },
+            "template": { "type": "string", "description": "代码开发时选择的脚手架模板，可选" },
+            "endpoint": { "type": "string", "format": "uri" },
+            "liveness": {
+              "enum": ["k8s", "heartbeat", "probe"],
+              "default": "k8s",
+              "description": "注册中心据此判断在线。probe 用于 Dify"
+            }
+          }
+        },
+        "auth": {
+          "type": "object",
+          "default": {},
+          "properties": {
+            "audience": {
+              "type": "string",
+              "description": "auth-gateway 签发 JWT 的 aud。缺省等于 metadata.name。注意用户 token 的 aud 统一是 keel-api，网关准入后换票成这个值"
+            },
+            "roles": { "type": "array", "items": { "type": "string" }, "default": [] }
+          }
+        },
+        "knowledge": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "object",
+            "required": ["kb"],
+            "properties": { "kb": { "type": "string", "description": "rag-forge 知识库名，必须已授权" } }
+          }
+        },
+        "tools": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+              "name": { "type": "string", "description": "必须已在 keel-server 注册" },
+              "access": { "enum": ["read", "write", "exec"], "default": "read" },
+              "risk": { "enum": ["low", "mid", "high"], "default": "low" },
+              "approval": { "enum": ["required", "none"], "default": "none" }
+            },
+            "allOf": [
+              {
+                "if": { "properties": { "risk": { "const": "high" } }, "required": ["risk"] },
+                "then": {
+                  "properties": { "approval": { "const": "required" } },
+                  "required": ["approval"],
+                  "$comment": "risk: high 必须 approval: required，否则注册自检不通过"
+                }
+              }
+            ]
+          }
+        },
+        "channels": {
+          "type": "array",
+          "default": [],
+          "description": "对外渠道。发布凭证和域名白名单在渠道表，不在智能体代码里",
+          "items": {
+            "type": "object",
+            "required": ["kind", "identity"],
+            "properties": {
+              "kind": { "enum": ["hosted", "embed", "web"] },
+              "identity": { "enum": ["exchange", "openid", "anonymous"] },
+              "origin": { "type": "string" }
+            }
+          }
+        },
+        "skills": {
+          "type": "array",
+          "default": [],
+          "description": "锁定技能名和版本。技能不带权限，依赖工具仍要单独出现在 tools 里",
+          "items": {
+            "type": "object",
+            "required": ["name", "version"],
+            "properties": {
+              "name": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}[a-z0-9]$" },
+              "version": { "type": "integer", "minimum": 1 }
+            }
+          }
+        },
+        "delegates": {
+          "type": "array",
+          "default": [],
+          "items": { "type": "string" },
+          "description": "可委派的智能体，必须已注册。keel-server 据此生成 auth-gateway 的 allowed_audiences。没列出的不允许委派"
+        },
+        "guardrails": {
+          "type": "object",
+          "default": {},
+          "properties": {
+            "inputInjection": { "enum": ["off", "shadow", "enforce"], "default": "shadow" },
+            "grounding": { "enum": ["off", "shadow", "enforce"], "default": "off" },
+            "pii": { "enum": ["off", "mask"], "default": "mask" }
+          }
+        },
+        "audit": {
+          "type": "object",
+          "default": {},
+          "properties": {
+            "retentionDays": { "type": "integer", "minimum": 1, "default": 180 },
+            "captureFields": {
+              "type": "array",
+              "items": { "type": "string" },
+              "default": [],
+              "description": "白名单：未列出的字段一律丢弃，不是「列出的字段脱敏」。写了敏感字段等于把它写进审计库"
+            }
+          }
+        },
+        "prompts": {
+          "type": "object",
+          "default": {},
+          "properties": {
+            "source": { "enum": ["langfuse", "local"], "default": "langfuse" },
+            "label": { "type": "string", "default": "production" },
+            "items": {
+              "type": "array",
+              "default": [],
+              "items": {
+                "type": "object",
+                "required": ["name", "type"],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9-]{0,38}[a-z0-9]$",
+                    "description": "Langfuse 里的全名是 {metadata.name}/{name}"
+                  },
+                  "type": { "enum": ["text", "chat"] }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "$comment": "按 kind 分流 spec 的专有字段。这个 if 必须放在根层级：kind 是根字段，写进 spec 的 allOf 里会去找 spec.kind，永远匹配不上，分支就全部走 else，Service 的约束一条都不生效。kind 缺省为 Agent，所以用 else 兜底而不是写 const Agent——缺省时 if 不成立。",
+      "if": { "properties": { "kind": { "const": "Service" } }, "required": ["kind"] },
+      "then": { "properties": { "spec": { "$ref": "#/$defs/serviceSpec" } } },
+      "else": { "properties": { "spec": { "$ref": "#/$defs/agentSpec" } } }
+    }
+  ],
+  "$defs": {
+    "agentSpec": {
+      "$comment": "kind: Agent 专有。models 是单一用途：一个默认模型加降级列表",
+      "properties": {
+        "models": {
+          "type": "object",
+          "default": {},
+          "properties": {
+            "default": { "type": "string", "description": "薄网关里的模型别名，不是厂商模型名，更不是密钥" },
+            "fallback": { "type": "array", "items": { "type": "string" }, "default": [] },
+            "budget": { "$ref": "#/$defs/budget" }
+          }
+        },
+        "eval": {
+          "type": "object",
+          "default": {},
+          "properties": {
+            "dataset": { "type": "string", "description": "Langfuse 数据集名" },
+            "evaluators": { "type": "array", "items": { "type": "string" }, "default": [] },
+            "gate": {
+              "type": "object",
+              "default": {},
+              "properties": {
+                "minScore": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.85 },
+                "maxRegression": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.02 },
+                "byTag": { "type": "boolean", "default": true }
+              },
+              "$comment": "改这两个数字等于放宽发布标准，要在 spec 里说明理由"
+            }
+          }
+        },
+        "quality": {
+          "type": "object",
+          "default": {},
+          "properties": {
+            "onlineEvalSampling": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.05 },
+            "feedback": { "type": "boolean", "default": true },
+            "annotationQueue": { "type": "string" }
+          }
+        },
+        "interaction": {
+          "type": "object",
+          "default": {},
+          "description": "交互形态，控制台调试页据此呈现。调用协议都是 /v1/invoke，这里只影响展示",
+          "properties": {
+            "mode": {
+              "enum": ["chat", "task", "service", "schedule"],
+              "default": "chat",
+              "description": "chat 多轮对话；task 提交一件事看步骤和产出；service 无用户入口，由事件或其他系统调用；schedule 按 cron 定时运行"
+            },
+            "schedule": {
+              "type": "string",
+              "pattern": "^\\S+( \\S+){4}$",
+              "description": "5 段 cron（分 时 日 月 周），mode: schedule 时必填"
+            },
+            "timezone": { "type": "string", "default": "Asia/Shanghai" },
+            "trigger": { "type": "string", "description": "给人看的一句话：谁触发它，如 GitHub PR webhook。mode: service 时建议填写" }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "mode": { "const": "schedule" } }, "required": ["mode"] },
+              "then": { "required": ["schedule"] }
+            }
+          ]
+        }
+      }
+    },
+    "serviceSpec": {
+      "$comment": "kind: Service 专有（rag-forge 等共享服务）。模型调用也要走薄网关，所以 models 和 budget 必须有；但 fallback 要按用途分开，向量化不允许降级",
+      "properties": {
+        "models": {
+          "type": "object",
+          "default": {},
+          "properties": {
+            "byPurpose": {
+              "type": "object",
+              "default": {},
+              "properties": {
+                "rewrite": { "$ref": "#/$defs/purposeModel" },
+                "judge": { "$ref": "#/$defs/purposeModel" },
+                "answer": { "$ref": "#/$defs/purposeModel" },
+                "embedding": {
+                  "allOf": [{ "$ref": "#/$defs/purposeModel" }],
+                  "properties": {
+                    "fallback": {
+                      "type": "array",
+                      "maxItems": 0,
+                      "default": [],
+                      "$comment": "必须为空。向量化一旦降级切到别的模型，新向量和库里的存量向量不在同一个空间，检索会静默变烂——不报错，只是召回率下降"
+                    }
+                  }
+                }
+              }
+            },
+            "budget": { "$ref": "#/$defs/budget" }
+          }
+        }
+      }
+    },
+    "purposeModel": {
+      "type": "object",
+      "properties": {
+        "default": { "type": "string", "description": "薄网关里的模型别名" },
+        "fallback": { "type": "array", "items": { "type": "string" }, "default": [] }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "default": {},
+      "properties": {
+        "dailyCny": {
+          "type": "number",
+          "minimum": 0,
+          "default": 30,
+          "description": "人民币。薄网关按这个数额执行日预算，开通时原样下发，不要写成美元"
+        },
+        "maxSteps": { "type": "integer", "minimum": 1, "default": 6 }
+      }
+    }
+  }
+}

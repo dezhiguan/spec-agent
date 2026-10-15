@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://keel.io/contracts/v1/sse-events.schema.json",
+  "title": "Keel /v1/invoke SSE 事件",
+  "description": "六种事件。根 schema 校验的是 {event, data} 形式的一帧，便于契约测试逐帧断言；实现侧可直接引用 $defs 下的单个事件体。未列出的字段被接受并忽略，但枚举值必须是已知取值。",
+  "oneOf": [
+    { "$ref": "#/$defs/frames/step" },
+    { "$ref": "#/$defs/frames/tool" },
+    { "$ref": "#/$defs/frames/token" },
+    { "$ref": "#/$defs/frames/final" },
+    { "$ref": "#/$defs/frames/error" },
+    { "$ref": "#/$defs/frames/suspend" }
+  ],
+  "$defs": {
+    "status": {
+      "enum": ["ok", "fallback", "failed"],
+      "description": "keel.status 三档，和追踪属性同一套口径"
+    },
+    "step": {
+      "type": "object",
+      "required": ["name", "status"],
+      "properties": {
+        "name": { "type": "string", "description": "步骤名。不要放用户原文" },
+        "status": { "$ref": "#/$defs/status" }
+      }
+    },
+    "tool": {
+      "type": "object",
+      "required": ["name", "status"],
+      "properties": {
+        "name": { "type": "string" },
+        "status": { "$ref": "#/$defs/status" }
+      }
+    },
+    "token": {
+      "type": "object",
+      "required": ["text"],
+      "properties": { "text": { "type": "string" } }
+    },
+    "final": {
+      "type": "object",
+      "required": ["answer", "trace_id", "run_id"],
+      "properties": {
+        "answer": { "type": "string" },
+        "citations": { "type": "array", "items": { "type": "object" }, "default": [] },
+        "meta": { "type": "object", "default": {} },
+        "trace_id": { "$ref": "#/$defs/traceId" },
+        "run_id": { "$ref": "#/$defs/runId" }
+      }
+    },
+    "error": {
+      "type": "object",
+      "required": ["code", "message", "trace_id", "retryable", "run_id"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9]*(_[A-Z0-9]+)+$",
+          "description": "必须登记在 error-codes.yaml，代码里不允许写字面量"
+        },
+        "message": { "type": "string" },
+        "trace_id": { "$ref": "#/$defs/traceId" },
+        "run_id": { "$ref": "#/$defs/runId" },
+        "retryable": { "type": "boolean" }
+      }
+    },
+    "suspend": {
+      "type": "object",
+      "description": "需要人介入。发完这一帧 SSE 流正常关闭，不是挂着等——挂着会占满网关并发位。网关转发本事件时释放并发位。",
+      "required": ["run_id", "reason", "trace_id", "resume_token"],
+      "properties": {
+        "run_id": { "$ref": "#/$defs/runId" },
+        "reason": {
+          "enum": ["approval", "input_required", "handoff"],
+          "description": "approval 等批准（ref 为 approval_id）；input_required 等用户回答（prompt 是要问的话）；handoff 转人工（ref 为工单或会话 id）。三个取值一次写全：新增枚举值对旧消费方是破坏性变更，不允许后补"
+        },
+        "ref": { "type": "string" },
+        "prompt": { "type": "string", "description": "给处理人看的摘要或问题" },
+        "deadline": {
+          "type": "string",
+          "format": "date-time",
+          "description": "RFC 3339 带 Z。过了这个时间 run 置 EXPIRED"
+        },
+        "resume_token": {
+          "type": "string",
+          "description": "调 /v1/runs/{id}/resume 时原样带回。它只证明持有者看到过这次挂起，不是认证凭据——谁有权恢复由 approval_policy 判定"
+        },
+        "trace_id": { "$ref": "#/$defs/traceId" }
+      }
+    },
+    "traceId": { "type": "string", "minLength": 1 },
+    "runId": { "type": "string", "minLength": 1 },
+    "frames": {
+      "step": {
+        "type": "object",
+        "required": ["event", "data"],
+        "properties": { "event": { "const": "step" }, "data": { "$ref": "#/$defs/step" } }
+      },
+      "tool": {
+        "type": "object",
+        "required": ["event", "data"],
+        "properties": { "event": { "const": "tool" }, "data": { "$ref": "#/$defs/tool" } }
+      },
+      "token": {
+        "type": "object",
+        "required": ["event", "data"],
+        "properties": { "event": { "const": "token" }, "data": { "$ref": "#/$defs/token" } }
+      },
+      "final": {
+        "type": "object",
+        "required": ["event", "data"],
+        "properties": { "event": { "const": "final" }, "data": { "$ref": "#/$defs/final" } }
+      },
+      "error": {
+        "type": "object",
+        "required": ["event", "data"],
+        "properties": { "event": { "const": "error" }, "data": { "$ref": "#/$defs/error" } }
+      },
+      "suspend": {
+        "type": "object",
+        "required": ["event", "data"],
+        "properties": { "event": { "const": "suspend" }, "data": { "$ref": "#/$defs/suspend" } }
+      }
+    }
+  }
+}

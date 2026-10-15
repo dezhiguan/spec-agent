@@ -1,0 +1,46 @@
+name: keel
+on: [push, pull_request]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install keel-sdk from the GitHub Release
+        env:
+          KEEL_GITHUB_TOKEN: ${{ secrets.KEEL_GITHUB_TOKEN }}
+        run: python scripts/install-keel-sdk.py
+      - name: Install locked dependencies
+        run: pip install -r requirements.lock
+      - name: Unit tests
+        run: pytest -q
+      - name: Gate
+        env:
+          KEEL_SERVER_URL: ${{ secrets.KEEL_SERVER_URL }}
+        run: |
+          uvicorn app:app --host 127.0.0.1 --port 8000 &
+          python -c 'import socket,time
+for _ in range(50):
+    try:
+        socket.create_connection(("127.0.0.1", 8000), 1).close(); break
+    except OSError:
+        time.sleep(0.2)
+else:
+    raise SystemExit("agent did not open port 8000")'
+          keel gate --env staging
+      - name: Build the image
+        env:
+          KEEL_GITHUB_TOKEN: ${{ secrets.KEEL_GITHUB_TOKEN }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_SHA}"
+          docker build --secret id=KEEL_GITHUB_TOKEN,env=KEEL_GITHUB_TOKEN -t "$image" .
+          echo "image=$image" >> "$GITHUB_ENV"
+      - name: Register and release staging
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          KEEL_SERVER_URL: ${{ secrets.KEEL_SERVER_URL }}
+        run: |
+          keel register --env staging
+          keel release --env staging --image "$image"
