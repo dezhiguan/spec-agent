@@ -15,7 +15,7 @@ jobs:
       - name: Install locked dependencies
         run: pip install -r requirements.lock
       - name: Unit tests
-        run: pytest -q
+        run: python -m pytest -q
       - name: Gate
         env:
           KEEL_SERVER_URL: ${{ vars.KEEL_SERVER_URL }}
