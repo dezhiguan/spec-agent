@@ -42,7 +42,7 @@ async def test_execute_normal_input():
                 "model": "qwen-plus",
                 "tools": ["devflow.catalog.search", "devflow.stage.report"],
                 "knowledge": [],
-                "grounding": false,
+                "grounding": False,
                 "budget": {"dailyBudgetCny": 30.0}
             },
             "authorization": [
