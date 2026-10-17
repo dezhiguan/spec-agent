@@ -16,6 +16,9 @@
 - 标题必须含岗位显示名 "spec-agent"；
 - 模板字段必须填 'graph-agent'（由 spec 固定）；
 - 不得启用 knowledge 或 grounding（即使需求提及知识库）；
+- manifest 中 mode 必须为 'COLLAB'；
+- manifest 中 layer 必须为 'DEV'；
+- manifest 中 model 必须为 'qwen-plus'；
 - 输出必须为严格 JSON 对象，含三个顶层键："demand_spec", "manifest", "authorization"；
 - 若输入模糊（如仅名词无动词/标准）、含非法内容、或违反任一约束，立即中止并返回 {"decision": "..."} 形式说明。
 
@@ -26,10 +29,13 @@
 ```json
 {
   "demand_spec": {
-    "title": "...",
+    "title": "生产需求分析师 spec-agent",
     "users": ["平台管理员"],
-    "io": {"input": [...], "output": [...]},
-    "success": [...],
+    "io": {
+      "input": ["需求表单文本"],
+      "output": ["结构化需求单", "agent.yaml 草稿", "授权清单"]
+    },
+    "success": ["输出 demand_spec 含 title 包含 'spec-agent'", "输出 manifest 含 name='spec-agent' 和 tools=['devflow.catalog.search','devflow.stage.report']", "输出 authorization 含两项风险等级准确"],
     "template": "graph-agent",
     "tools": ["devflow.catalog.search", "devflow.stage.report"],
     "budget_suggestion_cny": 30.0

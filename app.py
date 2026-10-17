@@ -7,12 +7,15 @@ agent = Agent.from_manifest("agent.yaml")
 
 @agent.entry
 async def run(request, ctx):
+    raw = request.input.get("text") or ""
     try:
-        data = json.loads(request.input.get("text") or "")
-    except json.JSONDecodeError as exc:
-        raise KeelError(ErrorCode.SERVER_INVALID_PARAM, "输入必须是 JSON 对象") from exc
-    if not isinstance(data, dict):
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        data = {"text": raw}
+    if isinstance(data, list):
         raise KeelError(ErrorCode.SERVER_INVALID_PARAM, "输入必须是 JSON 对象")
+    if not isinstance(data, dict):
+        data = {"text": raw}
     ctx.step("role")
     result = await execute(data, ctx)
     if not isinstance(result, dict):

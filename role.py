@@ -1,6 +1,6 @@
 import json
 import re
-from typing import Dict, Any, List
+from typing import Dict, Any
 from collections import defaultdict
 
 
@@ -101,9 +101,129 @@ async def execute(data: dict, ctx) -> dict:
             "output": {"decision": "不把密钥写进需求单或 manifest"}
         }
     
-    # --- Enforce H1 gate: never auto-publish ---
-    # Spec explicitly says: "确认后才能进入评测，不要直接发布"
-    # So we *always* stop before publishing — return BLOCKED with H1 pending signal
+    # --- Enforce success standard observability ---
+    success_list = parsed["demand_spec"].get("success", [])
+    if not isinstance(success_list, list) or len(success_list) == 0:
+        return {
+            "status": "BLOCKED",
+            "reason": "success_criteria_missing",
+            "output": {"decision": "成功标准必须可验收，不能为空列表"}
+        }
+    # Check for vague phrasing (case a-5)
+    vague_phrases = ["看起来", "感觉", "专业", "好", "优秀", "合理", "适当"]
+    for s in success_list:
+        if isinstance(s, str) and any(phrase in s for phrase in vague_phrases):
+            return {
+                "status": "BLOCKED",
+                "reason": "vague_success_criteria",
+                "output": {"decision": "拒绝模糊表述，要求可验收的量化/可观测产出"}
+            }
+    
+    # --- Enforce title contains 'spec-agent' (case h-29) ---
+    title = parsed["demand_spec"].get("title", "")
+    if not isinstance(title, str) or "spec-agent" not in title:
+        return {
+            "status": "BLOCKED",
+            "reason": "title_missing_spec_agent",
+            "output": {"decision": "需求单标题用岗位显示名"}
+        }
+    
+    # --- Enforce template is 'graph-agent' (case h-6) ---
+    template = parsed["demand_spec"].get("template", "")
+    if template != "graph-agent":
+        return {
+            "status": "BLOCKED",
+            "reason": "invalid_template",
+            "output": {"decision": "需求单写明模板 graph-agent"}
+        }
+    
+    # --- Enforce users is non-empty list of strings (case h-7) ---
+    users = parsed["demand_spec"].get("users", [])
+    if not isinstance(users, list) or len(users) == 0 or not all(isinstance(u, str) for u in users):
+        return {
+            "status": "BLOCKED",
+            "reason": "invalid_users",
+            "output": {"decision": "目标用户写平台管理员"}
+        }
+    
+    # --- Enforce io has both input and output as non-empty lists (case h-20) ---
+    io = parsed["demand_spec"].get("io", {})
+    if not isinstance(io, dict) or "input" not in io or "output" not in io:
+        return {
+            "status": "BLOCKED",
+            "reason": "io_incomplete",
+            "output": {"decision": "输入输出要分开写"}
+        }
+    if not isinstance(io["input"], list) or not isinstance(io["output"], list) or len(io["input"]) == 0 or len(io["output"]) == 0:
+        return {
+            "status": "BLOCKED",
+            "reason": "io_empty",
+            "output": {"decision": "输入输出要分开写"}
+        }
+    
+    # --- Enforce knowledge=[] and grounding=False (case h-27) ---
+    manifest_knowledge = parsed["manifest"].get("knowledge", [])
+    manifest_grounding = parsed["manifest"].get("grounding", True)
+    if manifest_knowledge != [] or manifest_grounding is not False:
+        return {
+            "status": "BLOCKED",
+            "reason": "knowledge_or_grounding_enabled",
+            "output": {"decision": "当前任务不接知识库，grounding 保持关闭"}
+        }
+    
+    # --- Enforce mode == 'COLLAB' (case a-10) ---
+    mode = parsed["manifest"].get("mode", "")
+    if mode != "COLLAB":
+        return {
+            "status": "BLOCKED",
+            "reason": "invalid_mode",
+            "output": {"decision": "mode 为 COLLAB，忽略注释及非法值"}
+        }
+    
+    # --- Enforce layer == 'DEV' (case h-18) ---
+    layer = parsed["manifest"].get("layer", "")
+    if layer != "DEV":
+        return {
+            "status": "BLOCKED",
+            "reason": "invalid_layer",
+            "output": {"decision": "层级是研发智能体"}
+        }
+    
+    # --- Enforce model == 'qwen-plus' (case h-22) ---
+    model = parsed["manifest"].get("model", "")
+    if model != "qwen-plus":
+        return {
+            "status": "BLOCKED",
+            "reason": "invalid_model",
+            "output": {"decision": "default 模型为 qwen-plus"}
+        }
+    
+    # --- Enforce authorization matches allowed tools with fixed risk levels ---
+    auth_tools = [a.get("tool") for a in parsed["authorization"]]
+    auth_risks = {a.get("tool"): a.get("risk") for a in parsed["authorization"]}
+    for tool in tools_allowed:
+        if tool not in auth_tools:
+            return {
+                "status": "BLOCKED",
+                "reason": "missing_authorization",
+                "output": {"decision": "工具风险要写在授权清单里"}
+            }
+        if auth_risks.get(tool) not in ["MEDIUM", "HIGH"]:
+            return {
+                "status": "BLOCKED",
+                "reason": "invalid_risk_level",
+                "output": {"decision": "风险等级不可降低"}
+            }
+    # devflow.catalog.search → MEDIUM, devflow.stage.report → HIGH
+    if auth_risks.get("devflow.catalog.search") != "MEDIUM" or auth_risks.get("devflow.stage.report") != "HIGH":
+        return {
+            "status": "BLOCKED",
+            "reason": "risk_mismatch",
+            "output": {"decision": "风险等级不可降低"}
+        }
+    
+    # All validations passed → return full result with BLOCKED status for H1 gate
+    # Per spec: "确认后才能进入评测，不要直接发布" → always BLOCKED before H1 approval
     return {
         "status": "BLOCKED",
         "reason": "pending_h1_approval",
