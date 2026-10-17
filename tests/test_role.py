@@ -15,13 +15,20 @@ class MockCtx:
         self.prompt = AsyncMock()
         self.prompt.return_value = MagicMock()
         self.prompt.return_value.compile = lambda **kw: self._prompt_content.format(**kw)
+        # Mock manifest.spec.tools
+        self.manifest = MagicMock()
+        self.manifest.spec = MagicMock()
+        self.manifest.spec.tools = [
+            {"name": "devflow.catalog.search", "risk": "low", "access": "read", "approval": "none"},
+            {"name": "devflow.stage.report", "risk": "low", "access": "write", "approval": "none"}
+        ]
 
 
 @pytest.mark.asyncio
 async def test_execute_normal_input():
     # Covers h-6, h-7, h-11, h-16, h-18, h-20, h-22, h-28, h-29, h-30, h-27, a-10, h-12
     ctx = MockCtx(
-        prompt_content="You are spec-agent... {{ input }}",
+        prompt_content="You are spec-agent... {{ input }}\n{{ evidence }}",
         llm_response=json.dumps({
             "demand_spec": {
                 "title": "生产需求分析师 spec-agent",
@@ -50,11 +57,17 @@ async def test_execute_normal_input():
                 "budget": {"dailyBudgetCny": 30.0}
             },
             "authorization": [
-                {"tool": "devflow.catalog.search", "risk": "MEDIUM"},
-                {"tool": "devflow.stage.report", "risk": "HIGH"}
+                {"tool": "devflow.catalog.search", "risk": "low"},
+                {"tool": "devflow.stage.report", "risk": "low"}
             ]
         })
     )
+
+    # Mock tool calls
+    ctx.tools.call = AsyncMock(side_effect=lambda name, **kwargs: {
+        "devflow.catalog.search": [{"id": "t1", "name": "devflow.catalog.search"}],
+        "devflow.stage.report": {"ok": True}
+    }[name])
 
     from role import execute
     result = await execute({"text": "模板用 graph-agent；使用者是平台管理员；工具只有 catalog.search 和 stage.report；输出需求单和 agent.yaml 草稿；层级是研发智能体；输入输出要分开写；模型用 qwen-plus；工具风险要写在授权清单里；需求单标题用岗位显示名；确认后才能进入评测；不要开通知识库；护栏要拦截注入，并掩盖个人敏感信息"}, ctx)
@@ -76,16 +89,16 @@ async def test_execute_normal_input():
     assert result["output"]["manifest"]["tools"] == ["devflow.catalog.search", "devflow.stage.report"]
     assert len(result["output"]["authorization"]) == 2
     assert result["output"]["authorization"][0]["tool"] == "devflow.catalog.search"
-    assert result["output"]["authorization"][0]["risk"] == "MEDIUM"
+    assert result["output"]["authorization"][0]["risk"] == "low"
     assert result["output"]["authorization"][1]["tool"] == "devflow.stage.report"
-    assert result["output"]["authorization"][1]["risk"] == "HIGH"
+    assert result["output"]["authorization"][1]["risk"] == "low"
 
 
 @pytest.mark.asyncio
 async def test_execute_vague_success_criteria_rejected():
     # Covers a-5: "系统看起来很专业"
     ctx = MockCtx(
-        prompt_content="You are spec-agent... {{ input }}",
+        prompt_content="You are spec-agent... {{ input }}\n{{ evidence }}",
         llm_response=json.dumps({
             "demand_spec": {
                 "title": "spec-agent",
@@ -106,10 +119,16 @@ async def test_execute_vague_success_criteria_rejected():
                 "budget": {"dailyBudgetCny": 30.0}
             },
             "authorization": [
-                {"tool": "devflow.catalog.search", "risk": "MEDIUM"}
+                {"tool": "devflow.catalog.search", "risk": "low"}
             ]
         })
     )
+
+    # Mock tool calls
+    ctx.tools.call = AsyncMock(side_effect=lambda name, **kwargs: {
+        "devflow.catalog.search": [{"id": "t1", "name": "devflow.catalog.search"}],
+        "devflow.stage.report": {"ok": True}
+    }[name])
 
     from role import execute
     result = await execute({"text": "成功标准：'系统看起来很专业'"}, ctx)
@@ -118,3 +137,28 @@ async def test_execute_vague_success_criteria_rejected():
     assert result["reason"] == "vague_success_criteria"
     assert "模糊表述" in result["output"]["decision"]
     assert "可验收" in result["output"]["decision"]
+
+
+@pytest.mark.asyncio
+async def test_execute_llm_returns_blocked_with_pass_explanation():
+    # Covers case where LLM returns {"decision": "BLOCKED", "explanation": "...PASS..."}
+    ctx = MockCtx(
+        prompt_content="You are spec-agent... {{ input }}\n{{ evidence }}",
+        llm_response=json.dumps({
+            "decision": "BLOCKED",
+            "explanation": "All checks passed — PASS!"
+        })
+    )
+
+    # Mock tool calls
+    ctx.tools.call = AsyncMock(side_effect=lambda name, **kwargs: {
+        "devflow.catalog.search": [{"id": "t1", "name": "devflow.catalog.search"}],
+        "devflow.stage.report": {"ok": True}
+    }[name])
+
+    from role import execute
+    result = await execute({"text": "test"}, ctx)
+
+    assert result["status"] == "BLOCKED"
+    assert result["reason"] == "llm_output_incomplete_schema"
+    assert "缺失必需字段" in result["output"]["decision"]

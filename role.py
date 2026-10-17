@@ -16,13 +16,63 @@ async def execute(data: dict, ctx) -> dict:
             "output": {"decision": "不生成 manifest，返回需要补充需求"}
         }
     
-    # Parse known constraints from spec (immutable)
-    tools_allowed = ["devflow.catalog.search", "devflow.stage.report"]
+    # Load trusted tool definitions from manifest (single source of truth)
+    try:
+        tools_spec = ctx.manifest.spec.tools or []
+    except AttributeError:
+        return {
+            "status": "BLOCKED",
+            "reason": "manifest_tools_unavailable",
+            "output": {"decision": "无法读取受信 agent.yaml 中的工具定义，中止执行"}
+        }
+    
+    # Build allowed tools set and required risk mapping
+    tools_allowed = []
+    tool_risk_map = {}
+    for t in tools_spec:
+        name = t.get("name")
+        risk = t.get("risk", "low")
+        if name and isinstance(name, str):
+            tools_allowed.append(name)
+            tool_risk_map[name] = risk
+    
+    # Validate at least two tools are present per spec
+    if len(tools_allowed) < 2:
+        return {
+            "status": "BLOCKED",
+            "reason": "insufficient_trusted_tools",
+            "output": {"decision": "必需调用至少两个已授权工具，当前注册表工具不足"}
+        }
+    
+    # Call both required tools
+    try:
+        search_result = await ctx.tools.call("devflow.catalog.search", query="spec-agent")
+    except Exception:
+        return {
+            "status": "BLOCKED",
+            "reason": "devflow.catalog.search_failed",
+            "output": {"decision": "devflow.catalog.search 调用失败，中止执行"}
+        }
+    
+    try:
+        report_result = await ctx.tools.call("devflow.stage.report", stage="spec-analysis", status="started")
+    except Exception:
+        return {
+            "status": "BLOCKED",
+            "reason": "devflow.stage.report_failed",
+            "output": {"decision": "devflow.stage.report 调用失败，中止执行"}
+        }
+    
+    # Assemble evidence for LLM
+    evidence = {
+        "catalog_search": search_result,
+        "stage_report": report_result
+    }
     
     # Load prompt
     try:
         prompt_template = await ctx.prompt("role")
-        compiled_prompt = prompt_template.compile(input=text)
+        compiled_prompt = prompt_template.compile(input=text, evidence=json.dumps(evidence, ensure_ascii=False, indent=2))
     except Exception:
         return {
             "status": "BLOCKED",
@@ -32,11 +82,9 @@ async def execute(data: dict, ctx) -> dict:
     
     # LLM call — only for structured extraction, no open-ended generation
     try:
-        llm_resp = await ctx.llm.chat(
-            messages=[{"role": "user", "content": compiled_prompt}],
-            temperature=0.0,
-            max_tokens=2048
-        )
+        llm_resp = await ctx.llm.chat([
+            {"role": "user", "content": compiled_prompt}
+        ], prompt=prompt_template)
         resp_text = llm_resp.get("content", "")
     except Exception:
         return {
@@ -198,7 +246,7 @@ async def execute(data: dict, ctx) -> dict:
             "output": {"decision": "default 模型为 qwen-plus"}
         }
     
-    # --- Enforce authorization matches allowed tools with fixed risk levels ---
+    # --- Enforce authorization matches allowed tools with fixed risk levels from manifest ---
     auth_tools = [a.get("tool") for a in parsed["authorization"]]
     auth_risks = {a.get("tool"): a.get("risk") for a in parsed["authorization"]}
     for tool in tools_allowed:
@@ -208,19 +256,13 @@ async def execute(data: dict, ctx) -> dict:
                 "reason": "missing_authorization",
                 "output": {"decision": "工具风险要写在授权清单里"}
             }
-        if auth_risks.get(tool) not in ["MEDIUM", "HIGH"]:
+        expected_risk = tool_risk_map.get(tool, "low")
+        if auth_risks.get(tool) != expected_risk:
             return {
                 "status": "BLOCKED",
-                "reason": "invalid_risk_level",
+                "reason": "risk_mismatch",
                 "output": {"decision": "风险等级不可降低"}
             }
-    # devflow.catalog.search → MEDIUM, devflow.stage.report → HIGH
-    if auth_risks.get("devflow.catalog.search") != "MEDIUM" or auth_risks.get("devflow.stage.report") != "HIGH":
-        return {
-            "status": "BLOCKED",
-            "reason": "risk_mismatch",
-            "output": {"decision": "风险等级不可降低"}
-        }
     
     # All validations passed → return full result with BLOCKED status for H1 gate
     # Per spec: "确认后才能进入评测，不要直接发布" → always BLOCKED before H1 approval
