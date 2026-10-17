@@ -1,0 +1,15 @@
+{
+  "io": "输入已确认的需求表单；输出需求单、manifest 草稿和授权清单。",
+  "goal": "把需求表单写成需求单和岗位说明书 agent.yaml，供人在 H1 确认。",
+  "risks": [
+    "若需求表单未声明 audit.captureFields，可能遗漏审计字段；若 target_agent 名称不符合命名规范，需人工修正"
+  ],
+  "title": "生产需求分析师 spec-agent",
+  "users": "提交研发任务的平台管理员",
+  "pending": [
+    "需 H1 确认 target_agent 名称 'spec-agent' 是否符合业务语义与唯一性要求",
+    "需确认是否需扩展 audit.captureFields（当前按规则 5 默认为空数组）",
+    "需确认 dailyBudgetCny=30.0 是否匹配实际资源配额"
+  ],
+  "success": "需求单写明目标用户、输入输出、成功标准、模板、工具和预算建议，且工具只来自注册表。"
+}
